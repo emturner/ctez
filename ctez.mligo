@@ -58,6 +58,7 @@ type result = (operation list) * storage
 [@inline] let error_EXCESSIVE_CTEZ_MINTING = 12n
 [@inline] let error_CALLER_MUST_BE_CFMM = 13n
 [@inline] let error_INVALID_CTEZ_TARGET_ENTRYPOINT = 14n
+[@inline] let error_TEZ_UNDERFLOW = 15n
 
 #include "oven.mligo"
 
@@ -114,7 +115,10 @@ let withdraw (s : storage) (p : withdraw)   : result =
   let oven_contract = get_oven_withdraw oven.address in
 
   (* Check for undercollateralization *)
-  let new_balance = oven.tez_balance - p.amount in
+  let new_balance = match oven.tez_balance - p.amount with 
+  | Some(new_b) -> new_b
+  | None -> failwith error_TEZ_UNDERFLOW
+  in
   let oven = {oven with tez_balance = new_balance} in
   let ovens = Big_map.update handle (Some oven) s.ovens in
   let s = {s with ovens = ovens} in
@@ -138,12 +142,15 @@ let register_deposit (s : storage) (p : register_deposit) : result =
 let liquidate (s: storage) (p : liquidate) : result  =
   let oven : oven = get_oven p.handle s in
   if is_under_collateralized oven s.target then
-    let remaining_ctez = match Michelson.is_nat (oven.ctez_outstanding - p.quantity) with
+    let remaining_ctez = match is_nat (oven.ctez_outstanding - p.quantity) with
       | None -> (failwith error_CANNOT_BURN_MORE_THAN_OUTSTANDING_AMOUNT_OF_CTEZ : nat)
       | Some n -> n  in
     (* get 32/31 of the target price, meaning there is a 1/31 penalty for the oven owner for being liquidated *)
     let extracted_balance = (Bitwise.shift_right (p.quantity * s.target) 43n) * 1mutez / 31n in (* 43 is 48 - log2(32) *)
-    let new_balance = oven.tez_balance - extracted_balance in
+    let new_balance = match oven.tez_balance - extracted_balance with 
+    | Some(new_b) -> new_b
+    | None -> failwith error_TEZ_UNDERFLOW
+    in
     let oven = {oven with ctez_outstanding = remaining_ctez ; tez_balance = new_balance} in
     let ovens = Big_map.update p.handle (Some oven) s.ovens in
     let s = {s with ovens = ovens} in
@@ -158,7 +165,7 @@ let liquidate (s: storage) (p : liquidate) : result  =
 let mint_or_burn (s : storage) (p : mint_or_burn) : result =
   let handle = { id = p.id ; owner = Tezos.sender } in
   let oven : oven = get_oven handle s in
-  let ctez_outstanding = match Michelson.is_nat (oven.ctez_outstanding + p.quantity) with
+  let ctez_outstanding = match is_nat (oven.ctez_outstanding + p.quantity) with
     | None -> (failwith error_CANNOT_BURN_MORE_THAN_OUTSTANDING_AMOUNT_OF_CTEZ : nat)
     | Some n -> n in
   let oven = {oven with ctez_outstanding = ctez_outstanding} in
